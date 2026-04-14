@@ -3,7 +3,7 @@
 md2docx — convert a Markdown file (with Mermaid diagrams) to .docx
 
 Usage:
-    md2docx <input.md> [output_dir]
+    md2docx <input.md> [output_dir] [options]
 
     input.md    — path to the source Markdown file
     output_dir  — where to write results (default: <input_stem>_output
@@ -15,10 +15,10 @@ Output layout:
         diagrams/          — rendered Mermaid PNG files
 
 Pipeline:
-    1. mmdc   — render Mermaid code blocks to PNG (theme neutral, width 1800)
+    1. mmdc   — render Mermaid code blocks to PNG (theme neutral)
     2. merge  — move standalone *Рисунок N — ...* captions into image alt text
     3. pandoc — convert processed markdown to docx
-    4. docx   — Times New Roman 12pt, images downscaled only, table borders
+    4. docx   — font/size applied, images downscaled only, table borders
 """
 
 import argparse
@@ -32,24 +32,25 @@ from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Pt
-
-# Max dimensions — images are ONLY SHRUNK, never enlarged
-MAX_WIDTH_CM = 14.0
-MAX_WIDTH_EMU = int(MAX_WIDTH_CM / 2.54 * 914400)
-
-MAX_HEIGHT_CM = 20.0   # safely below one A4 page
-MAX_HEIGHT_EMU = int(MAX_HEIGHT_CM / 2.54 * 914400)
+from docx.shared import Cm, Pt
 
 PUPPETEER_CFG_NAME = "_puppeteer.json"
+
+# Defaults
+DEFAULT_MERMAID_WIDTH = 2400
+DEFAULT_FONT = "Times New Roman"
+DEFAULT_FONT_SIZE = 12
+DEFAULT_MAX_WIDTH_CM = 14.0
+DEFAULT_MAX_HEIGHT_CM = 20.0
 
 
 # ---------------------------------------------------------------------------
 # Step 1: render Mermaid diagrams
 # ---------------------------------------------------------------------------
 
-def run_mmdc(src_md: Path, rendered_md: Path, diagrams_dir: Path) -> None:
-    print("▶ Rendering Mermaid diagrams (theme neutral, width 1800)...")
+def run_mmdc(src_md: Path, rendered_md: Path, diagrams_dir: Path,
+             width: int = DEFAULT_MERMAID_WIDTH) -> None:
+    print(f"▶ Rendering Mermaid diagrams (theme neutral, width {width}px)...")
     diagrams_dir.mkdir(parents=True, exist_ok=True)
 
     # Write puppeteer config for headless Chromium in Docker (no-sandbox)
@@ -63,7 +64,7 @@ def run_mmdc(src_md: Path, rendered_md: Path, diagrams_dir: Path) -> None:
             "-o", str(rendered_md),
             "--outputFormat", "png",
             "--theme", "neutral",
-            "--width", "1800",
+            "--width", str(width),
             "--backgroundColor", "white",
             "--puppeteerConfigFile", str(cfg_path),
         ],
@@ -128,7 +129,7 @@ def run_pandoc(processed_md: Path, output_docx: Path,
 # Step 4: python-docx post-processing
 # ---------------------------------------------------------------------------
 
-def _set_font(para, name: str = "Times New Roman", size_pt: int = 12) -> None:
+def _set_font(para, name: str, size_pt: int) -> None:
     for run in para.runs:
         run.font.name = name
         run.font.size = Pt(size_pt)
@@ -164,13 +165,15 @@ def _has_drawing(para) -> bool:
     return bool(para._element.findall(".//" + qn("w:drawing")))
 
 
-def _cap_images(doc: Document) -> None:
+def _cap_images(doc: Document, max_width_cm: float, max_height_cm: float) -> None:
     """Downscale images to fit within max dimensions. Never enlarge."""
+    max_w = int(max_width_cm / 2.54 * 914400)
+    max_h = int(max_height_cm / 2.54 * 914400)
     for shape in doc.inline_shapes:
         w, h = shape.width, shape.height
         if not w or not h:
             continue
-        scale = min(1.0, MAX_WIDTH_EMU / w, MAX_HEIGHT_EMU / h)
+        scale = min(1.0, max_w / w, max_h / h)
         if scale < 1.0:
             shape.width = int(w * scale)
             shape.height = int(h * scale)
@@ -196,19 +199,20 @@ def _add_borders(table) -> None:
     tblPr.append(borders)
 
 
-def postprocess(output_docx: Path) -> None:
-    print("▶ Post-processing: font, images, tables...")
+def postprocess(output_docx: Path, font: str, font_size: int,
+                max_width_cm: float, max_height_cm: float) -> None:
+    print(f"▶ Post-processing: {font} {font_size}pt, images ≤{max_width_cm}×{max_height_cm}cm, table borders...")
     doc = Document(str(output_docx))
 
     try:
-        doc.styles["Normal"].font.name = "Times New Roman"
-        doc.styles["Normal"].font.size = Pt(12)
+        doc.styles["Normal"].font.name = font
+        doc.styles["Normal"].font.size = Pt(font_size)
     except Exception:
         pass
 
     prev_image = False
     for para in doc.paragraphs:
-        _set_font(para)
+        _set_font(para, font, font_size)
         has_image = _has_drawing(para)
         if has_image or prev_image:
             para.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -216,14 +220,14 @@ def postprocess(output_docx: Path) -> None:
             para.alignment = WD_ALIGN_PARAGRAPH.CENTER
         prev_image = has_image
 
-    _cap_images(doc)
+    _cap_images(doc, max_width_cm, max_height_cm)
 
     for table in doc.tables:
         _add_borders(table)
         for row in table.rows:
             for cell in row.cells:
                 for para in cell.paragraphs:
-                    _set_font(para)
+                    _set_font(para, font, font_size)
 
     doc.save(str(output_docx))
 
@@ -232,19 +236,27 @@ def postprocess(output_docx: Path) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-DOCTOR_TEXT = """
+DOCTOR_TEXT = f"""
 md2docx — Markdown + Mermaid → .docx
 
 USAGE
-  md2docx <input.md> [output_dir]
+  md2docx <input.md> [output_dir] [options]
 
-  input.md    path to source Markdown file
-  output_dir  where to write results
-              (default: <stem>_output/ next to the input file)
+  input.md        path to source Markdown file
+  output_dir      where to write results
+                  (default: <stem>_output/ next to the input file)
+
+OPTIONS
+  --width PX      Mermaid render width in px      (default: {DEFAULT_MERMAID_WIDTH})
+  --font NAME     body font name                  (default: {DEFAULT_FONT})
+  --font-size PT  body font size in points        (default: {DEFAULT_FONT_SIZE})
+  --max-width CM  max image display width in cm   (default: {DEFAULT_MAX_WIDTH_CM})
+  --max-height CM max image display height in cm  (default: {DEFAULT_MAX_HEIGHT_CM})
 
 EXAMPLES
   md2docx thesis.md
-  md2docx docs/report.md /tmp/report_out
+  md2docx report.md /tmp/out --font "Arial" --font-size 11
+  md2docx arch.md --width 3600 --max-width 16
 
 OUTPUT
   <output_dir>/
@@ -256,8 +268,7 @@ SYSTEM DEPENDENCIES  (must be installed separately)
   mmdc        npm install -g @mermaid-js/mermaid-cli
 
 UPDATE THIS TOOL
-  cd ~/Documents/Projects/md2docx
-  uv tool install . --reinstall
+  uv tool install git+https://github.com/unsaid-azizov/md2docx.git --reinstall
 
 UNINSTALL
   uv tool uninstall md2docx
@@ -275,6 +286,43 @@ def main() -> None:
         nargs="?",
         default=None,
         help="Output directory (default: <input_stem>_output next to input file)",
+    )
+    parser.add_argument(
+        "--width",
+        type=int,
+        default=DEFAULT_MERMAID_WIDTH,
+        metavar="PX",
+        help=f"Mermaid render width in pixels (default: {DEFAULT_MERMAID_WIDTH})",
+    )
+    parser.add_argument(
+        "--font",
+        default=DEFAULT_FONT,
+        metavar="NAME",
+        help=f"Body font name (default: {DEFAULT_FONT!r})",
+    )
+    parser.add_argument(
+        "--font-size",
+        type=int,
+        default=DEFAULT_FONT_SIZE,
+        metavar="PT",
+        dest="font_size",
+        help=f"Body font size in points (default: {DEFAULT_FONT_SIZE})",
+    )
+    parser.add_argument(
+        "--max-width",
+        type=float,
+        default=DEFAULT_MAX_WIDTH_CM,
+        metavar="CM",
+        dest="max_width",
+        help=f"Max image display width in cm (default: {DEFAULT_MAX_WIDTH_CM})",
+    )
+    parser.add_argument(
+        "--max-height",
+        type=float,
+        default=DEFAULT_MAX_HEIGHT_CM,
+        metavar="CM",
+        dest="max_height",
+        help=f"Max image display height in cm (default: {DEFAULT_MAX_HEIGHT_CM})",
     )
     parser.add_argument(
         "--info", "--doctor",
@@ -307,14 +355,18 @@ def main() -> None:
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    run_mmdc(src_md, rendered_md, diagrams_dir)
+    run_mmdc(src_md, rendered_md, diagrams_dir, width=args.width)
 
     print("▶ Processing captions...")
     processed = process_markdown(rendered_md.read_text(encoding="utf-8"))
     processed_md.write_text(processed, encoding="utf-8")
 
     run_pandoc(processed_md, output_docx, src_dir, diagrams_dir)
-    postprocess(output_docx)
+    postprocess(output_docx,
+                font=args.font,
+                font_size=args.font_size,
+                max_width_cm=args.max_width,
+                max_height_cm=args.max_height)
 
     # Clean up temp markdown files; keep PNGs in diagrams/
     rendered_md.unlink(missing_ok=True)
