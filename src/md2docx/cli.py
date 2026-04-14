@@ -15,7 +15,7 @@ Output layout:
         diagrams/          — rendered Mermaid PNG files
 
 Pipeline:
-    1. mmdc   — render Mermaid code blocks to PNG (theme neutral, width 900)
+    1. mmdc   — render Mermaid code blocks to PNG (theme neutral, width 1800)
     2. merge  — move standalone *Рисунок N — ...* captions into image alt text
     3. pandoc — convert processed markdown to docx
     4. docx   — Times New Roman 12pt, images downscaled only, table borders
@@ -49,7 +49,7 @@ PUPPETEER_CFG_NAME = "_puppeteer.json"
 # ---------------------------------------------------------------------------
 
 def run_mmdc(src_md: Path, rendered_md: Path, diagrams_dir: Path) -> None:
-    print("▶ Rendering Mermaid diagrams (theme neutral, width 900)...")
+    print("▶ Rendering Mermaid diagrams (theme neutral, width 1800)...")
     diagrams_dir.mkdir(parents=True, exist_ok=True)
 
     # Write puppeteer config for headless Chromium in Docker (no-sandbox)
@@ -63,7 +63,7 @@ def run_mmdc(src_md: Path, rendered_md: Path, diagrams_dir: Path) -> None:
             "-o", str(rendered_md),
             "--outputFormat", "png",
             "--theme", "neutral",
-            "--width", "900",
+            "--width", "1800",
             "--backgroundColor", "white",
             "--puppeteerConfigFile", str(cfg_path),
         ],
