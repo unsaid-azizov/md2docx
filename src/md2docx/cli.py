@@ -86,15 +86,23 @@ def run_mmdc(src_md: Path, rendered_md: Path, diagrams_dir: Path,
 
 def process_markdown(text: str) -> str:
     """
-    Move standalone *Рисунок N — caption* / *Figure N — caption* lines
-    that precede an image into the image's alt text so pandoc renders
-    them as proper figure captions.
+    1. Strip the default "diagram" alt text that mmdc injects into every
+       rendered Mermaid image — without this pandoc prints "diagram" as a
+       figure caption for every unlabelled diagram.
+    2. Move standalone *Рисунок N — caption* / *Figure N — caption* lines
+       that precede an image into the image's alt text so pandoc renders
+       them as proper figure captions.
     """
-    return re.sub(
+    # Remove mmdc default alt text
+    text = re.sub(r"!\[diagram\]\(", "![](", text)
+
+    # Merge explicit captions into the following image's alt text
+    text = re.sub(
         r"\*([^\*\n]+)\*[ \t]*\n+[ \t]*!\[[^\]]*\]\(([^)]+)\)",
         lambda m: f"![{m.group(1).strip()}]({m.group(2)})",
         text,
     )
+    return text
 
 
 # ---------------------------------------------------------------------------
